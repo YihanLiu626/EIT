@@ -1,0 +1,78 @@
+
+import pandas as pd
+from datetime import datetime, timedelta
+
+# --- 1. 读取两个文件 ---
+df_meas = pd.read_csv("meas_plotter_20250610_165501.txt", comment='%', sep=';', names=["RelativeTime", "Impedance"])
+df_0610 = pd.read_csv("06101654.txt", header=None, names=["Channel", "Timestamp", "X", "Y", "Z", "Col6", "Col7"], dtype=str)
+df_0610 = df_0610[df_0610["Channel"].str.strip() == "1"]
+df_0610["Channel"] = df_0610["Channel"].astype(int)
+
+# --- 2. 转换 meas_plotter 相对时间为绝对时间 ---
+end_time = datetime.strptime("2025-06-10 16:55:01", "%Y-%m-%d %H:%M:%S")
+df_meas["Time"] = df_meas["RelativeTime"].apply(lambda x: end_time + timedelta(seconds=float(x)))
+
+# --- 3. 解析并调整 06--.txt 时间为 PM ---
+def parse_and_adjust_pm(ts):
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S:%f")
+        if dt.hour < 12:
+            dt += timedelta(hours=12)
+        return dt
+    except:
+        return pd.NaT
+
+df_0610["ParsedTime"] = df_0610["Timestamp"].apply(parse_and_adjust_pm)
+
+# --- 4. 去除无效时间并排序 ---
+df_0610_sorted = df_0610.dropna(subset=["ParsedTime"]).sort_values("ParsedTime").rename(columns={"ParsedTime": "Time"})
+df_meas_sorted = df_meas.sort_values("Time")
+
+
+
+# --- 5. 对齐（平均阻抗） ---
+tolerance = pd.Timedelta(milliseconds=5)
+
+def find_impedance_avg(center_time):
+    window = df_meas[(df_meas["Time"] >= center_time - tolerance) &
+                     (df_meas["Time"] <= center_time + tolerance)]
+    return window["Impedance"].mean() if not window.empty else None
+
+df_0610_sorted["Impedance"] = df_0610_sorted["Time"].apply(find_impedance_avg)
+matched_data = df_0610_sorted.dropna(subset=["Impedance"])
+matched_data = matched_data.drop(columns=["Timestamp"])
+
+# 将 Time 列放到最前面
+cols = ["Time"] + [col for col in matched_data.columns if col != "Time"]
+matched_data = matched_data[cols]
+
+# --- 6. 导出匹配数据 ---
+
+matched_data.to_csv("matched_data.csv", index=False)
+print("匹配完成，结果已保存为 matched_data.csv")
+
+
+# --- 可视化：双轴绘制阻抗与压力X ---
+import matplotlib.pyplot as plt
+
+matched_data["Time"] = pd.to_datetime(matched_data["Time"])
+matched_data["Impedance"] = pd.to_numeric(matched_data["Impedance"], errors="coerce")
+matched_data["X"] = pd.to_numeric(matched_data["X"], errors="coerce")
+
+fig, ax1 = plt.subplots(figsize=(12, 4))
+
+ax1.set_xlabel("Time")
+ax1.set_ylabel("Impedance (Ω)", color="tab:blue")
+ax1.plot(matched_data["Time"], matched_data["Impedance"], color="tab:blue", label="Impedance")
+ax1.tick_params(axis="y", labelcolor="tab:blue")
+
+ax2 = ax1.twinx()
+ax2.set_ylabel("Pressure (X)", color="tab:red")
+ax2.plot(matched_data["Time"], matched_data["X"], color="tab:red", alpha=0.6, label="Pressure (X)")
+ax2.tick_params(axis="y", labelcolor="tab:red")
+
+plt.title("Time-Aligned Impedance and Pressure (X)")
+fig.tight_layout()
+plt.grid(True)
+plt.savefig("matched_plot_x_dual_axis.png", dpi=300)
+plt.show()
