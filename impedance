@@ -1,0 +1,54 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import datetime
+
+# ========== 1. 读入数据 ========== #
+file_path = "meas_plotter_20250610_165500.txt"
+df = pd.read_csv(file_path, comment='%', sep=';', header=None, names=['Time_s', 'Impedance'])
+df = df.dropna()
+
+# 设定结束时间（可根据实际文件命名时间进行修改）
+end_time_str = "2025-06-10 16:55:00"
+end_time = datetime.datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S")
+
+# 将相对秒数转换为时间戳格式（从结束时间向前推）
+df['Timestamp'] = df['Time_s'].apply(lambda x: end_time + datetime.timedelta(seconds=float(x)))
+
+# ========== 2. 估算采样率 ========== #
+total_time = df['Time_s'].max() - df['Time_s'].min()
+fs = len(df) / total_time  # Hz
+
+# ========== 3. 滑动平均去趋势 ========== #
+# 设置窗口长度（秒），例如 6 秒
+window_sec = 6
+window_size = int(fs * window_sec)
+if window_size % 2 == 0:
+    window_size += 1  # 保证为奇数，便于中心对齐
+
+# 计算滑动平均趋势
+df['RollingMean'] = df['Impedance'].rolling(window=window_size, center=True, min_periods=1).mean()
+
+# 去趋势
+df['FluctuationOnly'] = df['Impedance'] - df['RollingMean']
+
+# ========== 3.1 再次滑动平均平滑曲线 ========== #
+smoothing_sec = 0.05 # 平滑窗口秒数，可根据需要调整
+smoothing_size = int(fs * smoothing_sec)
+if smoothing_size < 1:
+    smoothing_size = 1
+if smoothing_size % 2 == 0:
+    smoothing_size += 1  # 确保为奇数窗口
+df['SmoothedFluctuation'] = df['FluctuationOnly'].rolling(window=smoothing_size, center=True, min_periods=1).mean()
+
+# ========== 4. 可视化 ========== #
+plt.figure(figsize=(11, 4))
+plt.plot(df['Timestamp'], df['SmoothedFluctuation'], color='gray', linewidth=1.5)
+plt.title(f"Impedance Fluctuations (Rolling Mean Removed, Window = {window_sec}s)")
+plt.xlabel("Time")
+plt.ylabel("Impedance Fluctuation (Ω)")
+plt.tight_layout()
+plt.savefig("fluctuations_rolling_mean.png", dpi=300)
+plt.show()
+
+# ========== 5. 保存数据 ========== #
+df[['Timestamp', 'SmoothedFluctuation']].to_csv("/Users/lyh/Desktop/Pycharm Project/data/fluctuations_rolling_mean.csv", index=False)
